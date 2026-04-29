@@ -25,8 +25,6 @@ class WhackAMoleGame:
         self.screen = pygame.display.set_mode((self.config.SCREEN_WIDTH, self.config.SCREEN_HEIGHT))
         pygame.display.set_caption("打地鼠游戏")
         
-        pygame.mouse.set_visible(False)
-        
         self.clock = pygame.time.Clock()
         self.state = GameState()
         self.thread_manager = ThreadManager()
@@ -38,12 +36,36 @@ class WhackAMoleGame:
         self.score = 0
         self.misses = 0
         self.time_left = 0
+        self.total_moles = 0
+        self.last_hole = None
         
         self.background_surface = None
         self._create_background()
         
+        self._init_sounds()
         self._init_assets()
         self._init_ui()
+        
+    def _init_sounds(self):
+        self.hit_sound = None
+        try:
+            sample_rate = 44100
+            duration = 0.3
+            frequency = 300
+            
+            n_samples = int(round(duration * sample_rate))
+            buf = bytearray()
+            for i in range(n_samples):
+                t = i / sample_rate
+                value = int(32767 * math.sin(2 * math.pi * frequency * t))
+                value = int(value * math.exp(-t * 5))
+                buf.extend(value.to_bytes(2, byteorder='little', signed=True))
+            
+            sound_array = bytes(buf)
+            self.hit_sound = pygame.mixer.Sound(buffer=sound_array)
+            self.hit_sound.set_volume(0.5)
+        except:
+            pass
         
     def _create_background(self):
         self.background_surface = pygame.Surface((self.config.SCREEN_WIDTH, self.config.SCREEN_HEIGHT))
@@ -69,7 +91,7 @@ class WhackAMoleGame:
         center_y = self.config.SCREEN_HEIGHT // 2
         
         self.start_button = Button(
-            center_x - 100, center_y - 40, 200, 80,
+            center_x - 100, center_y + 20, 200, 80,
             "开始游戏", self.config.BUTTON_COLOR, self.config.BUTTON_HOVER_COLOR
         )
         
@@ -79,7 +101,7 @@ class WhackAMoleGame:
         )
         
         self.restart_button = Button(
-            center_x - 100, center_y + 50, 200, 80,
+            center_x - 100, center_y + 80, 200, 80,
             "重新开始", self.config.BUTTON_COLOR, self.config.BUTTON_HOVER_COLOR
         )
         
@@ -124,9 +146,12 @@ class WhackAMoleGame:
         self.state.current_screen = GameScreen.PLAYING
         self.state.is_paused = False
         self.thread_manager.set_paused(False)
+        pygame.mouse.set_visible(False)
         self.time_left = self.config.GAME_DURATION
         self.score = 0
         self.misses = 0
+        self.total_moles = 0
+        self.last_hole = None
         self.moles = []
         self.stars = []
         
@@ -153,15 +178,21 @@ class WhackAMoleGame:
         if not available_holes:
             return
             
+        if self.last_hole is not None and len(available_holes) > 1:
+            available_holes = [h for h in available_holes if h != self.last_hole]
+            
         hole = random.choice(available_holes)
         duration = random.uniform(self.config.MOLE_MIN_DURATION, self.config.MOLE_MAX_DURATION)
         
         mole = Mole(hole, duration, self.config)
         self.moles.append(mole)
         hole.has_mole = True
+        self.last_hole = hole
+        self.total_moles += 1
         
     def _end_game(self):
         self.state.current_screen = GameScreen.GAME_OVER
+        pygame.mouse.set_visible(True)
         self.thread_manager.stop_all_threads()
         
     def _handle_events(self):
@@ -177,13 +208,22 @@ class WhackAMoleGame:
             elif event.type == pygame.MOUSEMOTION:
                 self.hammer.set_position(event.pos)
                 
+    def _is_in_pause_area(self, pos):
+        pause_x_start = self.config.SCREEN_WIDTH - 150
+        pause_x_end = self.config.SCREEN_WIDTH
+        pause_y_start = 0
+        pause_y_end = 100
+        
+        return (pause_x_start <= pos[0] <= pause_x_end and
+                pause_y_start <= pos[1] <= pause_y_end)
+                
     def _handle_click(self, pos):
         if self.state.current_screen == GameScreen.MENU:
             if self.start_button.is_clicked(pos):
                 self._start_game()
                 
         elif self.state.current_screen == GameScreen.PLAYING:
-            if self.pause_button.is_clicked(pos):
+            if self._is_in_pause_area(pos):
                 self.state.is_paused = not self.state.is_paused
                 self.thread_manager.set_paused(self.state.is_paused)
                 self.pause_button.text = "继续" if self.state.is_paused else "暂停"
@@ -200,10 +240,18 @@ class WhackAMoleGame:
                 self._start_game()
                 
     def _check_mole_hit(self, pos):
+        hit_any = False
         for mole in self.moles[:]:
             if mole.is_hit(pos) and not mole.is_hit_state:
                 mole.hit()
                 self.score += 1
+                hit_any = True
+                
+                if self.hit_sound:
+                    try:
+                        self.hit_sound.play()
+                    except:
+                        pass
                 
                 star_positions = [
                     (mole.hole.x + random.randint(-30, 30), mole.hole.y - 40 + random.randint(-10, 10)),
@@ -213,18 +261,27 @@ class WhackAMoleGame:
                 for sp in star_positions:
                     self.stars.append(Star(sp[0], sp[1], self.config))
                     
-            elif not mole.is_hit_state:
-                self.misses += 1
+        if not hit_any:
+            for mole in self.moles:
+                if not mole.is_hit_state:
+                    self.misses += 1
+                    break
                 
     def _update(self):
         self.hammer.update()
         
         if self.state.current_screen == GameScreen.PLAYING and not self.state.is_paused:
+            for hole in self.holes:
+                hole.set_animating(False)
+                
             for mole in self.moles[:]:
                 mole.update()
+                if mole.animation_state in ["appearing", "disappearing"]:
+                    mole.hole.set_animating(True)
                 if mole.should_remove:
                     self.moles.remove(mole)
                     mole.hole.has_mole = False
+                    mole.hole.set_animating(False)
                     
             for star in self.stars[:]:
                 star.update()
@@ -238,14 +295,14 @@ class WhackAMoleGame:
         self._draw_ground()
         
         title_surface = self.text_renderer.render_large("打地鼠游戏", self.config.TEXT_COLOR)
-        title_rect = title_surface.get_rect(center=(self.config.SCREEN_WIDTH // 2, 150))
+        title_rect = title_surface.get_rect(center=(self.config.SCREEN_WIDTH // 2, 120))
         self.screen.blit(title_surface, title_rect)
         
         instruction_surface = self.text_renderer.render_small(
             "在10秒内尽可能多地打地鼠！", 
             self.config.TEXT_COLOR
         )
-        instruction_rect = instruction_surface.get_rect(center=(self.config.SCREEN_WIDTH // 2, 250))
+        instruction_rect = instruction_surface.get_rect(center=(self.config.SCREEN_WIDTH // 2, 220))
         self.screen.blit(instruction_surface, instruction_rect)
         
         self.start_button.draw(self.screen, pygame.mouse.get_pos())
@@ -282,21 +339,28 @@ class WhackAMoleGame:
         self._draw_ground()
         
         game_over_text = self.text_renderer.render_large("游戏结束", self.config.TEXT_COLOR)
-        game_over_rect = game_over_text.get_rect(center=(self.config.SCREEN_WIDTH // 2, 150))
+        game_over_rect = game_over_text.get_rect(center=(self.config.SCREEN_WIDTH // 2, 120))
         self.screen.blit(game_over_text, game_over_rect)
+        
+        total_text = self.text_renderer.render_medium(
+            f"出现: {self.total_moles} 只", 
+            self.config.TEXT_COLOR
+        )
+        total_rect = total_text.get_rect(center=(self.config.SCREEN_WIDTH // 2, 200))
+        self.screen.blit(total_text, total_rect)
         
         score_text = self.text_renderer.render_medium(
             f"打到: {self.score} 只", 
             self.config.TEXT_COLOR
         )
-        score_rect = score_text.get_rect(center=(self.config.SCREEN_WIDTH // 2, 250))
+        score_rect = score_text.get_rect(center=(self.config.SCREEN_WIDTH // 2, 270))
         self.screen.blit(score_text, score_rect)
         
         miss_text = self.text_renderer.render_medium(
             f"空击: {self.misses} 次", 
             self.config.TEXT_COLOR
         )
-        miss_rect = miss_text.get_rect(center=(self.config.SCREEN_WIDTH // 2, 320))
+        miss_rect = miss_text.get_rect(center=(self.config.SCREEN_WIDTH // 2, 340))
         self.screen.blit(miss_text, miss_rect)
         
         self.restart_button.draw(self.screen, pygame.mouse.get_pos())

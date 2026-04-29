@@ -11,6 +11,23 @@ class Hole:
         self.radius = config.HOLE_RADIUS
         self.config = config
         self.has_mole = False
+        self.is_animating = False
+        
+        self.dirt_particles = []
+        for _ in range(12):
+            offset_x = random.randint(-self.radius - 15, self.radius + 15)
+            offset_y = random.randint(-self.radius // 3, self.radius // 3)
+            dirt_size = random.randint(2, 5)
+            self.dirt_particles.append([offset_x, offset_y, dirt_size])
+        
+        self.animation_time = 0
+        
+    def set_animating(self, is_animating):
+        self.is_animating = is_animating
+        
+    def update(self):
+        if self.is_animating:
+            self.animation_time += 1
         
     def draw(self, screen):
         pygame.draw.ellipse(screen, self.config.HOLE_DARK_COLOR, (
@@ -34,14 +51,19 @@ class Hole:
             self.radius // 2
         ))
         
-        for _ in range(8):
-            offset_x = random.randint(-self.radius - 15, self.radius + 15)
-            offset_y = random.randint(-self.radius // 3, self.radius // 3)
-            dirt_size = random.randint(2, 5)
-            pygame.draw.circle(screen, self.config.DIRT_COLOR, (
-                self.x + offset_x,
-                self.y + offset_y
-            ), dirt_size)
+        for i, (offset_x, offset_y, dirt_size) in enumerate(self.dirt_particles):
+            if self.is_animating:
+                anim_offset_x = random.randint(-2, 2)
+                anim_offset_y = random.randint(-2, 2)
+                pygame.draw.circle(screen, self.config.DIRT_COLOR, (
+                    int(self.x + offset_x + anim_offset_x),
+                    int(self.y + offset_y + anim_offset_y)
+                ), dirt_size)
+            else:
+                pygame.draw.circle(screen, self.config.DIRT_COLOR, (
+                    self.x + offset_x,
+                    self.y + offset_y
+                ), dirt_size)
 
 class Mole:
     def __init__(self, hole, duration, config):
@@ -88,16 +110,22 @@ class Mole:
         
     def is_hit(self, pos):
         visible_offset = self._get_visible_offset()
-        if visible_offset <= 0:
+        
+        if self.animation_state in ["appearing", "disappearing"]:
+            if visible_offset <= 0:
+                visible_offset = self.max_visible_y // 3
+        
+        if visible_offset <= 5:
             return False
             
-        mole_rect = pygame.Rect(
-            self.hole.x - self.config.MOLE_SIZE // 2,
-            self.hole.y - visible_offset - self.config.MOLE_SIZE // 2,
-            self.config.MOLE_SIZE,
-            self.config.MOLE_SIZE
-        )
-        return mole_rect.collidepoint(pos)
+        hit_radius = int(self.config.MOLE_SIZE * 0.8)
+        hit_center_y = self.hole.y - max(visible_offset, self.max_visible_y // 2)
+        
+        dx = pos[0] - self.hole.x
+        dy = pos[1] - hit_center_y
+        distance = math.sqrt(dx * dx + dy * dy)
+        
+        return distance <= hit_radius
         
     def _get_visible_offset(self):
         if self.animation_state == "appearing":
@@ -194,8 +222,8 @@ class Hammer:
         self.y = 300
         self.is_swinging = False
         self.swing_angle = 0
-        self.swing_speed = 15
-        self.max_swing_angle = 45
+        self.swing_speed = 20
+        self.max_swing_angle = 60
         
     def set_position(self, pos):
         self.x, self.y = pos
@@ -217,7 +245,8 @@ class Hammer:
         head_width = 45
         head_height = 28
         
-        base_angle = 135
+        half_handle = handle_length // 2
+        base_angle = 45
         
         if self.is_swinging:
             swing_progress = min(self.swing_angle, self.max_swing_angle)
@@ -229,11 +258,14 @@ class Hammer:
             
         angle_rad = math.radians(current_angle)
         
-        head_center_x = self.x
-        head_center_y = self.y
+        pivot_x = self.x
+        pivot_y = self.y
         
-        handle_end_x = head_center_x + handle_length * math.cos(angle_rad)
-        handle_end_y = head_center_y + handle_length * math.sin(angle_rad)
+        head_center_x = pivot_x - half_handle * math.cos(angle_rad)
+        head_center_y = pivot_y - half_handle * math.sin(angle_rad)
+        
+        handle_end_x = pivot_x + half_handle * math.cos(angle_rad)
+        handle_end_y = pivot_y + half_handle * math.sin(angle_rad)
         
         pygame.draw.line(screen, (139, 90, 43), (head_center_x, head_center_y), (handle_end_x, handle_end_y), 8)
         pygame.draw.line(screen, (100, 70, 30), (head_center_x, head_center_y), (handle_end_x, handle_end_y), 3)
